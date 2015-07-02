@@ -160,7 +160,7 @@ func sync(texture: MTLTexture) -> MTLTexture {
     return texture
 }
 
-func waifu2x(inTextures: MTLTexture, weight: [float3x3], bias: Float) -> MTLTexture {
+func waifu2x(inTextures: MTLTexture, weight: ContiguousArray<float3x3>, bias: Float) -> MTLTexture {
     let inCount = weight.count
     precondition(inCount == inTextures.arrayLength)
 
@@ -196,16 +196,16 @@ func waifu2x(inTextures: MTLTexture, weight: [float3x3], bias: Float) -> MTLText
 }
 
 struct ModelLayer {
-    let bias: [Float]
-    let weight: [[float3x3]]
+    let bias: Array<Float>
+    let weight: ContiguousArray<ContiguousArray<float3x3>>
 }
 
 func process(layerInfo: [ModelLayer], inTexture: MTLTexture) -> MTLTexture {
     var inputs = inTexture
 
     for info in layerInfo {
-        let outputs = zip(info.weight, info.bias).map { (weight, bias) -> MTLTexture in
-            return waifu2x(inputs, weight: weight, bias: bias)
+        let outputs = zip(info.weight, info.bias).map { (a,b) -> MTLTexture in
+            return waifu2x(inputs, weight: a, bias: b)
         }
         print(outputs.count)
 
@@ -223,17 +223,17 @@ func createModelLayer(layerInfo: [String: AnyObject]) -> ModelLayer {
     let kH = layerInfo["kH"] as! Int
     precondition(kW == 3 && kH == 3)
 
-    let bias = layerInfo["bias"] as! [Float]
+    let bias = layerInfo["bias"] as! Array<Float>
     let nInputPlane = layerInfo["nInputPlane"] as! Int
     let nOutputPlane = layerInfo["nOutputPlane"] as! Int
     let weightOrig = layerInfo["weight"] as! [[[[Float]]]]
-    var weight = Array<Array<float3x3>>(count: nOutputPlane, repeatedValue: Array<float3x3>())
+    var weight = ContiguousArray<ContiguousArray<float3x3>>(count: nOutputPlane, repeatedValue: ContiguousArray<float3x3>())
 
     precondition(weightOrig.count == nOutputPlane)
     precondition(weightOrig[0].count == nInputPlane)
 
     for i in 0..<nOutputPlane {
-        weight[i] = Array<float3x3>(count: nInputPlane, repeatedValue: float3x3())
+        weight[i] = ContiguousArray<float3x3>(count: nInputPlane, repeatedValue: float3x3())
         for j in 0..<nInputPlane {
             let w = weightOrig[i][j]
             weight[i][j] = float3x3([float3(w[0]), float3(w[1]), float3(w[2])])
