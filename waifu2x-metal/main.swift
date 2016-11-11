@@ -8,6 +8,7 @@
 
 
 import Cocoa
+import Quartz
 import Metal
 import MetalKit
 import simd
@@ -15,7 +16,7 @@ import simd
 
 
 extension MTLComputeCommandEncoder {
-    func setThread(texture: MTLTexture) {
+    func setThread(_ texture: MTLTexture) {
         let width  = texture.width
         let height = texture.height
 
@@ -29,98 +30,93 @@ extension MTLComputeCommandEncoder {
 
 let device = MTLCreateSystemDefaultDevice()!
 let library = device.newDefaultLibrary()!
-let queue = device.newCommandQueue()
+let queue = device.makeCommandQueue()
 
-let waifu2xPipelineState = try! device.newComputePipelineStateWithFunction(library.newFunctionWithName("waifu2x")!)
-let splitToRGBChannelsPipelineState = try! device.newComputePipelineStateWithFunction(library.newFunctionWithName("splitToRGBChannels")!)
-let combineRGBChannelsPipelineState = try! device.newComputePipelineStateWithFunction(library.newFunctionWithName("combineRGBChannels")!)
+let waifu2xPipelineState = try! device.makeComputePipelineState(function: library.makeFunction(name: "waifu2x")!)
+let splitToRGBChannelsPipelineState = try! device.makeComputePipelineState(function: library.makeFunction(name: "splitToRGBChannels")!)
+let combineRGBChannelsPipelineState = try! device.makeComputePipelineState(function: library.makeFunction(name: "combineRGBChannels")!)
 
 
-func saveImage(image: CGImage, path: String) {
-    let rep = NSBitmapImageRep(CGImage: image)
-    rep.size = CGSize(width: CGImageGetWidth(image), height: CGImageGetHeight(image))
+func saveImage(_ image: CGImage, path: String) {
+    let rep = NSBitmapImageRep(cgImage: image)
+    rep.size = CGSize(width: image.width, height: image.height)
 
-    guard let data = rep.representationUsingType(.NSPNGFileType, properties: [:]) else {
+    guard let data = rep.representation(using: .PNG, properties: [:]) else {
         fatalError()
     }
-    data.writeToFile(path, atomically: true)
+    try? data.write(to: URL(fileURLWithPath: path), options: [.atomic])
 }
 
-func createContext(texture: MTLTexture) -> CGContext? {
+func createContext(_ texture: MTLTexture) -> CGContext? {
     let width = texture.width
     let height = texture.height
     let rowBytes = width * 4
 
-    var buf = Array<UInt8>(count: rowBytes * height * 4, repeatedValue: 0)
+    var buf = Array<UInt8>(repeating: 0, count: rowBytes * height * 4)
     let region = MTLRegionMake2D(0, 0, width, height)
-    texture.getBytes(&buf, bytesPerRow: rowBytes, fromRegion: region, mipmapLevel: 0)
+    texture.getBytes(&buf, bytesPerRow: rowBytes, from: region, mipmapLevel: 0)
 
     let colorSpace = CGColorSpaceCreateDeviceRGB()
-    return CGBitmapContextCreate(&buf, width, height, 8, rowBytes, colorSpace, CGImageAlphaInfo.PremultipliedLast.rawValue)
+    return CGContext(data: &buf, width: width, height: height, bitsPerComponent: 8, bytesPerRow: rowBytes, space: colorSpace, bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)
 }
 
-func createImage(texture: MTLTexture) -> CGImage? {
+func createImage(_ texture: MTLTexture) -> CGImage? {
     let context = createContext(texture)
-    return CGBitmapContextCreateImage(context)
+    return context?.makeImage()
 }
 
-func createTexture(image: CGImage, width: Int, height: Int) -> MTLTexture {
+func createTexture(_ image: CGImage, width: Int, height: Int) -> MTLTexture {
     let colorSpace = CGColorSpaceCreateDeviceRGB()
     let bitsPerComp = 8
     let rowBytes = width * 4
-    let alpha = CGImageAlphaInfo.PremultipliedLast
-    let context = CGBitmapContextCreate(nil, width, height, bitsPerComp, rowBytes, colorSpace, alpha.rawValue)
+    let alpha = CGImageAlphaInfo.premultipliedLast
+    let context = CGContext(data: nil, width: width, height: height, bitsPerComponent: bitsPerComp, bytesPerRow: rowBytes, space: colorSpace, bitmapInfo: alpha.rawValue)
 
-    CGContextSetInterpolationQuality(context, .None)
-    CGContextDrawImage(context, CGRectMake(0, 0, CGFloat(width), CGFloat(height)), image)
+    context!.interpolationQuality = .none
+    context?.draw(image, in: CGRect(x: 0, y: 0, width: CGFloat(width), height: CGFloat(height)))
 
     let texture = createEmptyTexture(device, width: width, height: height)
-    let pixels = CGBitmapContextGetData(context)
+    let pixels = context?.data
     let region = MTLRegionMake2D(0, 0, width, height)
-    texture.replaceRegion(region, mipmapLevel: 0, withBytes: pixels, bytesPerRow: rowBytes)
+    texture.replace(region: region, mipmapLevel: 0, withBytes: pixels!, bytesPerRow: rowBytes)
 
     return texture
 }
 
-func getPixelBuffer(context: CGContextRef) -> UnsafeMutableBufferPointer<UInt8> {
-    let rowBytes = CGBitmapContextGetBytesPerRow(context)
-    let height = CGBitmapContextGetHeight(context)
-    let data = CGBitmapContextGetData(context)
-    let buffer = UnsafeMutableBufferPointer(start: data, count: rowBytes * height)
-    return unsafeBitCast(buffer, UnsafeMutableBufferPointer<UInt8>.self)
-}
-
-func loadImage(path: String) -> CGImage? {
-    let imgDataProvider = CGDataProviderCreateWithCFData(NSData(contentsOfFile: path))
-    if let image = CGImageCreateWithJPEGDataProvider(imgDataProvider, nil, true, .RenderingIntentDefault) { return image }
-    let image = CGImageCreateWithPNGDataProvider(imgDataProvider, nil, true, .RenderingIntentDefault)
+func loadImage(_ path: String) -> CGImage? {
+    let data = try? Data(contentsOf: URL(fileURLWithPath: path))
+    guard let imgDataProvider = CGDataProvider(data: data as! CFData) else {
+        fatalError("ImageProvider failure")
+    }
+    if let image = CGImage(jpegDataProviderSource: imgDataProvider, decode: nil, shouldInterpolate: true, intent: .defaultIntent) { return image }
+    let image = CGImage(pngDataProviderSource: imgDataProvider, decode: nil, shouldInterpolate: true, intent: .defaultIntent)
 
     return image
 }
 
-func createEmptyTexture(device: MTLDevice, width: Int, height: Int, format: MTLPixelFormat = .RGBA8Unorm, length: Int = 0) -> MTLTexture {
-    let desc = MTLTextureDescriptor.texture2DDescriptorWithPixelFormat(format, width: width, height: height, mipmapped: false)
+func createEmptyTexture(_ device: MTLDevice, width: Int, height: Int, format: MTLPixelFormat = .rgba8Unorm, length: Int = 0) -> MTLTexture {
+    let desc = MTLTextureDescriptor.texture2DDescriptor(pixelFormat: format, width: width, height: height, mipmapped: false)
     if length > 0 {
-        desc.textureType = .Type2DArray
+        desc.textureType = .type2DArray
         desc.arrayLength = length
     }
 
-    return device.newTextureWithDescriptor(desc)
+    return device.makeTexture(descriptor: desc)
 }
 
-func createEncoder(commandBuffer: MTLCommandBuffer, pipelineState: MTLComputePipelineState) -> MTLComputeCommandEncoder {
-    let encoder = commandBuffer.computeCommandEncoder()
+func createEncoder(_ commandBuffer: MTLCommandBuffer, pipelineState: MTLComputePipelineState) -> MTLComputeCommandEncoder {
+    let encoder = commandBuffer.makeComputeCommandEncoder()
     encoder.setComputePipelineState(pipelineState)
     return encoder
 }
 
 
-func createMetalFunc(pipelineState: MTLComputePipelineState, inTexture: MTLTexture, outTexture: MTLTexture) -> MTLTexture {
-    let commandBuf = queue.commandBuffer()
+func createMetalFunc(_ pipelineState: MTLComputePipelineState, inTexture: MTLTexture, outTexture: MTLTexture) -> MTLTexture {
+    let commandBuf = queue.makeCommandBuffer()
     do {
         let encoder = createEncoder(commandBuf, pipelineState: pipelineState)
-        encoder.setTexture(inTexture, atIndex: 0)
-        encoder.setTexture(outTexture, atIndex: 1)
+        encoder.setTexture(inTexture, at: 0)
+        encoder.setTexture(outTexture, at: 1)
         encoder.setThread(inTexture)
         encoder.endEncoding()
     }
@@ -128,59 +124,61 @@ func createMetalFunc(pipelineState: MTLComputePipelineState, inTexture: MTLTextu
     commandBuf.waitUntilCompleted()
 
     if let err = commandBuf.error {
-        fatalError("MetalExecutionError: " + err.description)
+        fatalError("MetalExecutionError: \(err)")
     }
 
     return outTexture
 }
 
-func splitToRGBChannels(inTexture: MTLTexture) -> MTLTexture {
-    let outTexture = createEmptyTexture(device, width: inTexture.width, height: inTexture.height, format: .R32Float, length: 3)
+func splitToRGBChannels(_ inTexture: MTLTexture) -> MTLTexture {
+    let outTexture = createEmptyTexture(device, width: inTexture.width, height: inTexture.height, format: .r32Float, length: 3)
     return createMetalFunc(splitToRGBChannelsPipelineState, inTexture: inTexture, outTexture: outTexture)
 }
 
-func combineRGBChannels(inTexture: MTLTexture) -> MTLTexture {
+func combineRGBChannels(_ inTexture: MTLTexture) -> MTLTexture {
     let outTexture = createEmptyTexture(device, width: inTexture.width, height: inTexture.height)
     return createMetalFunc(combineRGBChannelsPipelineState, inTexture: inTexture, outTexture: outTexture)
 }
 
-func sync(texture: MTLTexture) -> MTLTexture {
-    let commandBuf = queue.commandBuffer()
+func sync(_ texture: MTLTexture) -> MTLTexture {
+    let commandBuf = queue.makeCommandBuffer()
     do {
-        let encoder = commandBuf.blitCommandEncoder()
-        encoder.synchronizeResource(texture)
+        let encoder = commandBuf.makeBlitCommandEncoder()
+        encoder.synchronize(resource: texture)
         encoder.endEncoding()
     }
     commandBuf.commit()
     commandBuf.waitUntilCompleted()
 
     if let err = commandBuf.error {
-        fatalError("MetalExecutionError: " + err.description)
+        fatalError("MetalExecutionError: \(err)")
     }
     return texture
 }
 
-func waifu2x(inTextures: MTLTexture, weight: ContiguousArray<float3x3>, bias: Float) -> MTLTexture {
+func waifu2x(_ inTextures: MTLTexture, weight: ContiguousArray<float3x3>, bias: Float) -> MTLTexture {
     let inCount = weight.count
     precondition(inCount == inTextures.arrayLength)
 
-    let outTexture = createEmptyTexture(device, width: inTextures.width, height: inTextures.height, format: .R32Float)
-    let commandBuf = queue.commandBuffer()
+    let outTexture = createEmptyTexture(device, width: inTextures.width, height: inTextures.height, format: .r32Float)
+    let commandBuf = queue.makeCommandBuffer()
 
     do {
         let encoder = createEncoder(commandBuf, pipelineState: waifu2xPipelineState)
-        encoder.setTexture(inTextures, atIndex: 0)
-        encoder.setTexture(outTexture, atIndex: 1)
+        encoder.setTexture(inTextures, at: 0)
+        encoder.setTexture(outTexture, at: 1)
 
-        let weightBuffer = device.newBufferWithLength(sizeof(float3x3) * inCount, options: [])
-        let ws = UnsafeMutablePointer<float3x3>(weightBuffer.contents())
+        let weightBuffer = device.makeBuffer(length: MemoryLayout<float3x3>.size * inCount, options: [])
+
+        let ws = weightBuffer.contents().assumingMemoryBound(to: float3x3.self)
         for i in 0..<inCount { ws[i] = weight[i] }
-        encoder.setBuffer(weightBuffer, offset: 0, atIndex: 0)
+        encoder.setBuffer(weightBuffer, offset: 0, at: 0)
 
-        let biasBuffer = device.newBufferWithLength(sizeof(Float32), options: [])
-        let b = UnsafeMutablePointer<Float32>(biasBuffer.contents())
+        let biasBuffer = device.makeBuffer(length: MemoryLayout<Float32>.size, options: [])
+
+        let b = biasBuffer.contents().assumingMemoryBound(to: Float32.self)
         b[0] = Float32(bias)
-        encoder.setBuffer(biasBuffer, offset: 0, atIndex: 1)
+        encoder.setBuffer(biasBuffer, offset: 0, at: 1)
 
         encoder.setThread(inTextures)
         encoder.endEncoding()
@@ -189,7 +187,7 @@ func waifu2x(inTextures: MTLTexture, weight: ContiguousArray<float3x3>, bias: Fl
     commandBuf.waitUntilCompleted()
 
     if let err = commandBuf.error {
-        fatalError("MetalExecutionError: " + err.description)
+        fatalError("MetalExecutionError: \(err)")
     }
     
     return outTexture
@@ -200,7 +198,7 @@ struct ModelLayer {
     let weight: ContiguousArray<ContiguousArray<float3x3>>
 }
 
-func process(layerInfo: [ModelLayer], inTexture: MTLTexture) -> MTLTexture {
+func process(_ layerInfo: [ModelLayer], inTexture: MTLTexture) -> MTLTexture {
     var inputs = inTexture
 
     for info in layerInfo {
@@ -218,7 +216,7 @@ func process(layerInfo: [ModelLayer], inTexture: MTLTexture) -> MTLTexture {
 }
 
 
-func createModelLayer(layerInfo: [String: AnyObject]) -> ModelLayer {
+func createModelLayer(_ layerInfo: [String: AnyObject]) -> ModelLayer {
     let kW = layerInfo["kW"] as! Int
     let kH = layerInfo["kH"] as! Int
     precondition(kW == 3 && kH == 3)
@@ -227,13 +225,13 @@ func createModelLayer(layerInfo: [String: AnyObject]) -> ModelLayer {
     let nInputPlane = layerInfo["nInputPlane"] as! Int
     let nOutputPlane = layerInfo["nOutputPlane"] as! Int
     let weightOrig = layerInfo["weight"] as! [[[[Float]]]]
-    var weight = ContiguousArray<ContiguousArray<float3x3>>(count: nOutputPlane, repeatedValue: ContiguousArray<float3x3>())
+    var weight = ContiguousArray<ContiguousArray<float3x3>>(repeating: ContiguousArray<float3x3>(), count: nOutputPlane)
 
     precondition(weightOrig.count == nOutputPlane)
     precondition(weightOrig[0].count == nInputPlane)
 
     for i in 0..<nOutputPlane {
-        weight[i] = ContiguousArray<float3x3>(count: nInputPlane, repeatedValue: float3x3())
+        weight[i] = ContiguousArray<float3x3>(repeating: float3x3(), count: nInputPlane)
         for j in 0..<nInputPlane {
             let w = weightOrig[i][j]
             weight[i][j] = float3x3([float3(w[0]), float3(w[1]), float3(w[2])])
@@ -243,37 +241,37 @@ func createModelLayer(layerInfo: [String: AnyObject]) -> ModelLayer {
     return ModelLayer(bias: bias, weight: weight)
 }
 
-func newArray(e: MTLTexture, size: Int = 1) -> MTLTexture {
+func newArray(_ e: MTLTexture, size: Int = 1) -> MTLTexture {
     let width = e.width
     let height = e.height
-    return createEmptyTexture(device, width: width, height: height, format: .R32Float, length: size)
+    return createEmptyTexture(device, width: width, height: height, format: .r32Float, length: size)
 }
 
-func copy(src: [MTLTexture], dest: MTLTexture) {
-    let commandBuf = queue.commandBuffer()
-    let encoder = commandBuf.blitCommandEncoder()
+func copy(_ src: [MTLTexture], dest: MTLTexture) {
+    let commandBuf = queue.makeCommandBuffer()
+    let encoder = commandBuf.makeBlitCommandEncoder()
     for i in 0..<src.count {
-        encoder.copyFromTexture(src[i], sourceSlice: 0, sourceLevel: 0, sourceOrigin: MTLOrigin(), sourceSize: MTLSizeMake(dest.width, dest.height, 1), toTexture: dest, destinationSlice: i, destinationLevel: 0, destinationOrigin: MTLOrigin())
+        encoder.copy(from: src[i], sourceSlice: 0, sourceLevel: 0, sourceOrigin: MTLOrigin(), sourceSize: MTLSizeMake(dest.width, dest.height, 1), to: dest, destinationSlice: i, destinationLevel: 0, destinationOrigin: MTLOrigin())
     }
     encoder.endEncoding()
     commandBuf.commit()
     commandBuf.waitUntilCompleted()
 
     if let err = commandBuf.error {
-        fatalError("MetalExecutionError: " + err.description)
+        fatalError("MetalExecutionError: \(err)")
     }
 }
 
-if Process.arguments.count >= 2 {
-    let path = Process.arguments[1]
+if CommandLine.arguments.count >= 1 {
+    let path = "a.png"//Process.arguments[1]
 
     let resizeJsonFile = "scale2.0x_model.json"
-    let jsonObj = try! NSJSONSerialization.JSONObjectWithData(NSData(contentsOfFile: resizeJsonFile)!, options: []) as! [[String: AnyObject]]
+    let jsonObj = try! JSONSerialization.jsonObject(with: Data(contentsOf: URL(fileURLWithPath: resizeJsonFile)), options: []) as! [[String: AnyObject]]
     let model = jsonObj.map(createModelLayer)
 
     let image = loadImage(path)!
-    let width = CGImageGetWidth(image)
-    let height = CGImageGetHeight(image)
+    let width = image.width
+    let height = image.height
     let resized = createTexture(image, width: width * 2, height: height * 2)
 
     let rgbtex = splitToRGBChannels(resized)
