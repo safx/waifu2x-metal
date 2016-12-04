@@ -263,7 +263,7 @@ func copy(_ src: [MTLTexture], dest: MTLTexture) {
 }
 
 if CommandLine.arguments.count >= 1 {
-    let path = "a.png"//Process.arguments[1]
+    let path = CommandLine.arguments[1]
 
     let resizeJsonFile = "scale2.0x_model.json"
     let jsonObj = try! JSONSerialization.jsonObject(with: Data(contentsOf: URL(fileURLWithPath: resizeJsonFile)), options: []) as! [[String: AnyObject]]
