@@ -100,7 +100,10 @@ func createEmptyTexture(_ device: MTLDevice, width: Int, height: Int, format: MT
         desc.textureType = .type2DArray
         desc.arrayLength = length
     }
-
+    if #available(OSX 10.11, *) {
+        desc.usage = [.shaderWrite, .shaderRead]
+    }
+    
     return device.makeTexture(descriptor: desc)
 }
 
@@ -263,7 +266,7 @@ func copy(_ src: [MTLTexture], dest: MTLTexture) {
 }
 
 if CommandLine.arguments.count >= 1 {
-    let path = "a.png"//Process.arguments[1]
+    let path = CommandLine.arguments[1]
 
     let resizeJsonFile = "scale2.0x_model.json"
     let jsonObj = try! JSONSerialization.jsonObject(with: Data(contentsOf: URL(fileURLWithPath: resizeJsonFile)), options: []) as! [[String: AnyObject]]
