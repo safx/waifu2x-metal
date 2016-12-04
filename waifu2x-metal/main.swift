@@ -100,7 +100,10 @@ func createEmptyTexture(_ device: MTLDevice, width: Int, height: Int, format: MT
         desc.textureType = .type2DArray
         desc.arrayLength = length
     }
-
+    if #available(OSX 10.11, *) {
+        desc.usage = [.shaderWrite, .shaderRead]
+    }
+    
     return device.makeTexture(descriptor: desc)
 }
 
